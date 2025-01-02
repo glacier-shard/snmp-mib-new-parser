@@ -4,9 +4,7 @@ IMPORTS
         enterprises
                 FROM RFC1155-SMI
         DisplayString
-                FROM SNMPv2-TC
-        OBJECT-TYPE
-                FROM RFC1212-MIB;
+                FROM SNMPv2-TC;
 
 unix    OBJECT IDENTIFIER ::= { enterprises 4 }
 

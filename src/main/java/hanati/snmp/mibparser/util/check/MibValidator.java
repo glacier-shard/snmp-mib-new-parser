@@ -12,20 +12,17 @@ import hanati.snmp.mibparser.util.pair.CommonResult;
 
 import java.io.*;
 import java.net.URL;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 public class MibValidator {
 
-    public boolean isMibFile(File file) {
+    public CommonResult isMibFile(File file) {
+        CommonResult result = new CommonResult(CommonResult.INVALID_MIB_FILE_ERROR, "Not a valid MIB file");
+
         if (!file.canRead() || !file.isFile()) {
-            return false;
+            return result;
         }
-        try (
-                BufferedReader in = new BufferedReader(new FileReader(file))
-        ) {
+        try (BufferedReader in = new BufferedReader(new FileReader(file))) {
             while (true) {
                 String str = in.readLine();
                 if (str == null) {
@@ -33,17 +30,19 @@ public class MibValidator {
                 }
                 str = str.trim();
                 if (!str.isEmpty() && !str.startsWith("--")) {
-                    return str.contains("DEFINITIONS");
+                    if (str.contains("DEFINITIONS")) {
+                        result = new CommonResult(CommonResult.SUCCESS);
+                        break;
+                    }
                 }
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            result = new CommonResult(CommonResult.UNKNOWN_ERROR, e.getMessage());
         }
-        return false;
+        return result;
     }
 
     public CommonResult syntaxValidator(File file) {
-
         InputStream is = null;
         SmiMib mib = new SmiMib(new SmiOptions(), new SmiJavaCodeNamingStrategy("hanati.snmp.mibparser.mib"));
         CommonResult result = null;
@@ -61,87 +60,43 @@ public class MibValidator {
 
         } catch (TokenStreamException te) {
             String msg = "[Lex error] " + te.getMessage();
-            result = new CommonResult(CommonResult.FAIL, msg);
+            result = new CommonResult(CommonResult.SYNTAX_ERROR, msg);
         } catch (RecognitionException re) {
             String msg = "[Parse error] " + exceptionHandler(re.getMessage(), re.getLine(), re.getColumn());
-            result = new CommonResult(CommonResult.FAIL, msg);
+            result = new CommonResult(CommonResult.SYNTAX_ERROR, msg);
         } catch (IOException ie) {
             String msg = "[I/O error] " + ie.getMessage();
-            result = new CommonResult(CommonResult.FAIL, msg);
+            result = new CommonResult(CommonResult.SYNTAX_ERROR, msg);
         } finally {
             if (is != null) {
                 try {
                     is.close();
                 } catch (IOException ioe) {
                     String msg = "[I/O error-2] " + ioe.getMessage();
-                    result = new CommonResult(CommonResult.FAIL, msg);
+                    result = new CommonResult(CommonResult.SYNTAX_ERROR, msg);
                 }
             }
         }
         return result;
     }
 
-    public CommonResult importValidator(File baseDir, File newDir) {
-        InputStream is = null;
-        SmiMib mib = new SmiMib(new SmiOptions(), new SmiJavaCodeNamingStrategy("hanati.snmp.mibparser.mib"));
+    public CommonResult importValidator(File targetMib, SmiMib mib) {
         Set<String> list = new HashSet<>();
-        CommonResult result = null;
+        CommonResult result;
 
-        try {
-            Set<File> mibFiles = new HashSet<>();
-            mibFiles.addAll(List.of(baseDir.listFiles()));
-            mibFiles.addAll(List.of(newDir.listFiles()));
-
-            for (File f : mibFiles) {
-                URL url = f.toURL();
-                is = url.openStream();
-                is = new BufferedInputStream(is);
-                SMILexer lexer = new SMILexer(is);
-                SMIParser parser = new SMIParser(lexer);
-                parser.init(mib, url.toString());
-
-                parser.external_module_check();
-            }
-
-//            this.defineMissingSymbols(mib);
-            mib.fillTables();
-            mib.defineMissingStandardOids();
-
-            Iterator i$ = mib.getModules().iterator();
-            while(i$.hasNext()) {
-                SmiModule module = (SmiModule)i$.next();
-                List<String> check = module.checkImports();
-                if(!check.isEmpty()) {
-                    list.addAll(check);
-                }
-            }
-
-            if(list.size()!=0) {
-                result = new CommonResult(CommonResult.FAIL, list);
-            } else {
-                result = new CommonResult(CommonResult.SUCCESS);
-            }
-
-        } catch (TokenStreamException te) {
-            String msg = "[Lex error] " + te.getMessage();
-            result = new CommonResult(CommonResult.ERROR, msg);
-        } catch (RecognitionException re) {
-            String msg = "[Parse error] " + exceptionHandler(re.getMessage(), re.getLine(), re.getColumn());
-            result = new CommonResult(CommonResult.ERROR, msg);
-        } catch (IOException ie) {
-            String msg = "[I/O error] " + ie.getMessage();
-            result = new CommonResult(CommonResult.ERROR, msg);
-        } finally {
-            if (is != null) {
-                try {
-                    is.close();
-                } catch (IOException ioe) {
-                    String msg = "[I/O error-2] " + ioe.getMessage();
-                    result = new CommonResult(CommonResult.ERROR, msg);
-                }
+        for (SmiModule module : mib.getModules()) {
+            List<String> check = module.checkImports();
+            if (!check.isEmpty()) {
+                list.addAll(check);
             }
         }
-//        return list;
+
+        if (!list.isEmpty()) {
+            result = new CommonResult(CommonResult.IMPORT_ERROR, list);
+        } else {
+            result = new CommonResult(CommonResult.SUCCESS);
+        }
+
         return result;
     }
 

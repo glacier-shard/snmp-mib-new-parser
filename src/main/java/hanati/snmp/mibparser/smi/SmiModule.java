@@ -405,7 +405,6 @@ public class SmiModule {
 
         while(i$.hasNext()) {
             SmiImports smiImport = (SmiImports)i$.next();
-//            return smiImport.checkImports();
             boolean check = smiImport.checkImports();
             if(!check) {
                 list.add(smiImport.getModuleToken().getId());
@@ -417,5 +416,9 @@ public class SmiModule {
 
     public String toString() {
         return this.idToken.toString();
+    }
+
+    public Map<String, SmiOidValue> getOidValueMap() {
+        return oidValueMap;
     }
 }

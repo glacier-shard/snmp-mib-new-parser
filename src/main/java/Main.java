@@ -29,7 +29,7 @@ public class Main {
             File baseDir = new File("mibs");
             File newDir = new File("mibs2");
 
-            parser.loadMibs(baseDir, newDir);
+//            parser.loadMibs(baseDir, newDir);
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -56,8 +56,8 @@ public class Main {
             case "map":
 //                Map<Object, Object> map = parser.getMibMap("mib-jnx-analyzer.txt");
 //                Map<Object, Object> map = parser.getMibMap(new File("C:\\project\\code\\mibparser2\\mibs2\\mib-jnx-analyzer.txt"));
-                Map<Object, Object> map = parser.getMibMap(new File("/Users/ihyeseong/IdeaProjects/mib-parser2/newMibs/IPTIME-ROUTER-MIB.txt"));
-                String json = new ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(map);
+//                Map<Object, Object> map = parser.getMibMap(new File("/Users/ihyeseong/IdeaProjects/mib-parser2/newMibs/IPTIME-ROUTER-MIB.txt"));
+//                String json = new ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(map);
 
 //                System.out.printf(json);
 
@@ -67,7 +67,7 @@ public class Main {
                     File file = new File(filename);
                     FileWriter fw = new FileWriter(file, true);
 
-                    fw.write(json);
+//                    fw.write(json);
                     fw.flush();
                     fw.close();
                 } catch (Exception e) {

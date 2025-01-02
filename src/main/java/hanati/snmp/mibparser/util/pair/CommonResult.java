@@ -8,6 +8,10 @@ public class CommonResult {
     public static final int SUCCESS = 1;
     public static final int FAIL = 0;
     public static final int ERROR = -1;
+    public static final int INVALID_MIB_FILE_ERROR = 100;
+    public static final int SYNTAX_ERROR = 101;
+    public static final int IMPORT_ERROR = 102;
+    public static final int UNKNOWN_ERROR = 103;
 
     public CommonResult(int resultCode) {
         this.resultCode = resultCode;

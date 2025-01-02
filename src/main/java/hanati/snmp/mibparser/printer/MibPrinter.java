@@ -2,6 +2,9 @@ package hanati.snmp.mibparser.printer;
 
 import hanati.snmp.mibparser.parser.SmiDefaultParser;
 import hanati.snmp.mibparser.smi.*;
+import hanati.snmp.mibparser.util.check.MibValidator;
+import hanati.snmp.mibparser.util.pair.CommonResult;
+import hanati.snmp.mibparser.util.pair.MibDTO;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -9,40 +12,48 @@ import java.io.FileReader;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.*;
+import java.util.stream.Collectors;
 
 public class MibPrinter {
     private static SmiMib mibs;
 
-    public void loadMibs (File mibDir) throws MalformedURLException {
-        File[] mibFiles = mibDir.listFiles();
-
-        List<URL> mibUrls = new ArrayList<URL>();
-        for (File mib: mibFiles) {
-            mibUrls.add(mib.toURI().toURL());
-        }
-
-        SmiDefaultParser parser = new SmiDefaultParser();
-        parser.getFileParserPhase().setInputUrls(mibUrls);
-        mibs = parser.parse();
-    }
-
-    public void loadMibs (File baseDir, File newDir) throws MalformedURLException {
+    public CommonResult loadMibs (File uploadDir, File enterpriseDir, File standardDir) {
         try {
             Set<File> mibFiles = new HashSet<>();
-            mibFiles.addAll(List.of(baseDir.listFiles()));
-            mibFiles.addAll(List.of(newDir.listFiles()));
+            Set<File> uploadFiles = new HashSet<>();
+            Optional.ofNullable(uploadDir).map(File::listFiles).ifPresent(files -> {
+                mibFiles.addAll(List.of(files));
+                uploadFiles.addAll(List.of(files));
+            });
+            Optional.ofNullable(enterpriseDir).map(File::listFiles).ifPresent(files -> mibFiles.addAll(List.of(files)));
+            Optional.ofNullable(standardDir).map(File::listFiles).ifPresent(files -> mibFiles.addAll(List.of(files)));
+
+            MibValidator validator = new MibValidator();
+            for (File mib : uploadFiles) {
+                CommonResult mibFileResult = validator.isMibFile(mib);
+                if (mibFileResult.getResultCode() != CommonResult.SUCCESS) {
+                    return mibFileResult;
+                }
+                CommonResult syntaxResult = validator.syntaxValidator(mib);
+                if (syntaxResult.getResultCode() != CommonResult.SUCCESS) {
+                    return syntaxResult;
+                }
+            }
 
             List<URL> mibUrls = new ArrayList<URL>();
-
             for(File mib : mibFiles){
                 mibUrls.add(mib.toURI().toURL());
             }
+
             SmiDefaultParser parser = new SmiDefaultParser();
             parser.getFileParserPhase().setInputUrls(mibUrls);
             mibs = parser.parse();
+
         } catch (Exception e) {
-            e.printStackTrace();
+            return new CommonResult(CommonResult.UNKNOWN_ERROR, e.getMessage());
         }
+
+        return new CommonResult(CommonResult.SUCCESS);
     }
 
     public String getObjectNameByOID(int... oid) {
@@ -404,7 +415,6 @@ public class MibPrinter {
         return check;
     }
 
-
     public boolean checkModule(SmiOidNode node, String mib) {
         for(SmiValue sv : node.getValues()) {
             if(mib.equals(sv.getModule().getId())) {
@@ -436,212 +446,186 @@ public class MibPrinter {
         return String.format(format, str);
     }
 
-    public Map<Object,Object> getMibMap (String mibName) {
-        SmiModule module = mibs.findModule(mibName);
-        SmiMib mib = module.getMib();
-        SmiOidNode node = mib.getRootNode();
-
-        Map<Object, Object> ast = new LinkedHashMap<>();
-
-        mibAstToMap(ast, mibName, node, 0);
-
-        return ast;
-    }
-
-    public Map<Object,Object> getMibMap (File mibFile) {
+    public CommonResult getMibMap (File targetFile, boolean isForAll) {
+        MibValidator validator = new MibValidator();
+        CommonResult importResult = validator.importValidator(targetFile, mibs);
+        if (importResult.getResultCode() != CommonResult.SUCCESS) {
+            StringBuilder msg = new StringBuilder();
+            Object dataObj = importResult.getData();
+            if (dataObj instanceof Set<?> dataSet) {
+                String joinedData = dataSet.stream()
+                        .map(Object::toString)
+                        .collect(Collectors.joining(", "));
+                msg.append(joinedData);
+            }
+            return new CommonResult(CommonResult.IMPORT_ERROR, msg.toString());
+        }
 
         String str = "";
+        String strPrev = "";
         String mibName = "";
 
-        try ( BufferedReader in = new BufferedReader(new FileReader(mibFile)) ) {
-            while (true) {
-                str = in.readLine();
-                str = str.trim();
-                if (str.contains("DEFINITIONS")) {
-                    break;
+        try ( BufferedReader in = new BufferedReader(new FileReader(targetFile)) ) {
+            do {
+                String line = in.readLine();
+                strPrev = str;
+                if (!Objects.equals(line, "")) {
+                    str = line;
                 }
-            }
+                str = str.trim();
+            } while (!str.contains("DEFINITIONS"));
 
+            StringTokenizer stPrev = new StringTokenizer(strPrev, " ");
             StringTokenizer st = new StringTokenizer(str, " ");
             mibName = st.nextToken();
-        } catch (Exception e) {
-            e.printStackTrace();
+            if ("DEFINITIONS".equals(mibName)) {
+                mibName = stPrev.nextToken();
+            }
+        }
+        catch (Exception e) {
+            return new CommonResult(CommonResult.UNKNOWN_ERROR, e.getMessage());
         }
 
         SmiModule module = mibs.findModule(mibName);
-        SmiMib mib = module.getMib();
-        SmiOidNode node = mib.getRootNode();
+        List<MibDTO> ast = new ArrayList<>();
+        Set<String> oidSet = new HashSet<>();
 
-        Map<Object, Object> ast = new LinkedHashMap<>();
+        if (isForAll) {
+            SmiMib mib = module.getMib();
+            SmiOidNode node = mib.getRootNode();
+            MibDTO mibDTO = mibAstToMap(node, 0, module);
+            ast.add(mibDTO);
+        }
+        else {
+            Map<String, SmiOidValue> oidValueMap = module.getOidValueMap();
+            oidValueMap.forEach((key, value) -> {
+                SmiOidNode node = value.getNode();
+                checkIfVisited(node, 0, oidSet);
+            });
 
-        mibAstToMap(ast, mibName, node, 0);
+            oidValueMap.forEach((key, value) -> {
+                SmiOidNode node = value.getNode();
+                if (!oidSet.contains(node.getOidStr())) {
+                    MibDTO mibDTO = mibAstToMap(node, 0, module);
+                    ast.add(mibDTO);
+                }
+            });
+        }
 
-        return ast;
+        return new CommonResult(CommonResult.SUCCESS, ast);
     }
 
-    public void mibAstToMap (Map<Object, Object> map, String mibName, SmiOidNode node, int depth) {
-        Collection<? extends SmiOidNode> childs = node.getChildren();
-        boolean printDesc = true;
-        boolean isPrivate = false;
+    public void checkIfVisited(SmiOidNode node, int depth, Set<String> oidSet) {
+        node.getChildren().forEach(child -> {
+            String oid = child.getOidStr();
+            oidSet.add(oid);
+            checkIfVisited(child, depth + 1, oidSet);
+        });
+    }
 
-        ArrayList<Object> list = new ArrayList<>();
+    public MibDTO mibAstToMap(SmiOidNode node, int depth, SmiModule module) {
+        Collection<? extends  SmiOidNode> children = node.getChildren();
+        List<MibDTO> list = new ArrayList<>();
 
-        for (SmiOidNode child : childs) {
-            List <SmiOidValue> values = child.getValues();
-            Map<Object, Object> m = new LinkedHashMap<>();
+        for (SmiOidNode child : children) {
+            MibDTO childTree = mibAstToMap(child, depth + 1, module);
+            if (childTree != null) {
+                list.add(childTree);
+            }
+        }
 
-            if (values.size()!=0) {
-                SmiOidValue var = values.get(0);
+        List<SmiOidValue> values = node.getValues();
+        String name = "";
+        String oid = "";
+        Boolean isScalar = null;
+        String type = "";
+        String syntax = "";
+        String access = "";
+        String mib = "";
+        String status = "";
+        String defval = "";
+        String indexes = "";
+        String description = "";
 
-                String name = var.getId();
-                String oid = var.getOidStr();
+        if (!values.isEmpty()) {
+            SmiOidValue var = values.get(0);
 
-                m.put("name", name);
-                m.put("oid", oid);
+            name = var.getId();
+            oid = var.getOidStr();
+            isScalar = module.findScalar(name) != null;
+            boolean printDesc = true;
 
-                if (var instanceof SmiTable) {
+            if (var instanceof SmiTable) {
+                SmiTable st = (SmiTable) var;
 
-                    SmiTable st = (SmiTable) var;
+                type = "TABLE";
+                syntax = "SEQUENCE OF " + st.getType().getElementTypeToken().getValue();
+                access = st.getAccessToken()!=null? st.getAccessToken().getId() : st.getMaxAccessToken().getId();
+                mib = st.getModule().getId();
+                status = st.getStatus().toString();
+                description = printDescription(st.getDescription(), printDesc);
+            }
+            else if (var instanceof SmiRow) {
+                SmiRow sr = (SmiRow) var;
 
-                    String type = "TABLE";
-                    String syntax = "SEQUENCE OF " + st.getType().getElementTypeToken().getValue();
-                    String access = st.getAccessToken()!=null? st.getAccessToken().getId() : st.getMaxAccessToken().getId();
-                    String mib = st.getModule().getId();
-                    String status = st.getStatus().toString();
-                    String defval = "";
-                    String indexes = "";
-                    String description = printDescription(st.getDescription(), printDesc);
+                type =  "ENTRY";
+                syntax = sr.getType().getIdToken().getValue();
+                access = sr.getAccessToken()!=null? sr.getAccessToken().getId() : sr.getMaxAccessToken().getId();
+                mib = sr.getModule().getId();
+                status = sr.getStatus().toString();
+                description = printDescription(sr.getDescription(), printDesc);
 
-                    m.put("type", type);
-                    m.put("syntax", syntax);
-                    m.put("access", access);
-                    m.put("mib", mib);
-                    m.put("status", status);
-                    m.put("defval", defval);
-                    m.put("indexes", indexes);
-                    m.put("description", description);
-
-                } else if (var instanceof SmiRow) {
-
-                    SmiRow sr = (SmiRow)var;
-
-                    String type =  "ENTRY";
-
-                    String syntax = sr.getType().getIdToken().getValue();
-                    String access = sr.getAccessToken()!=null? sr.getAccessToken().getId() : sr.getMaxAccessToken().getId();
-                    String mib = sr.getModule().getId();
-                    String status = sr.getStatus().toString();
-                    String defval = "";
-                    String indexes = "";
-                    String description = printDescription(sr.getDescription(), printDesc);
-
-                    if(sr.getIndexes()!=null) {
-                        List <SmiIndex> idx = sr.getIndexes();
-                        StringBuilder sb = new StringBuilder();
-                        for (SmiIndex index : idx) {
-                            sb.append(", " + index.getColumn().getId());
-                        }
-                        indexes += sb.toString().replaceFirst(", ", "");
+                if(sr.getIndexes()!=null) {
+                    List <SmiIndex> idx = sr.getIndexes();
+                    StringBuilder sb = new StringBuilder();
+                    for (SmiIndex index : idx) {
+                        sb.append(", ").append(index.getColumn().getId());
                     }
-
-                    m.put("type", type);
-                    m.put("syntax", syntax);
-                    m.put("access", access);
-                    m.put("mib", mib);
-                    m.put("status", status);
-                    m.put("defval", defval);
-                    m.put("indexes", indexes);
-                    m.put("description", description);
-
-                } else if (var instanceof SmiVariable) {
-                    SmiVariable sv = (SmiVariable) var;
-
-                    String type = name.contains("Index")? "INDEX":"LEAF";
-                    String syntax = "" ;
-
-                    if(sv.getType().getBaseType()!=null) {
-                        syntax = sv.getType().getBaseType().getId();
-                    } else if(sv.getType().getPrimitiveType()!=null){
-                        syntax= sv.getType().getPrimitiveType().toString();
-                    } else {
-                        syntax = sv.getType().getIdToken().getValue();
-                    }
-
-
-                    // Define Syntax Range
-//                    if( sv.getType().getSizeConstraints() != null ) {
-//                        syntax = syntax + " (SIZE (" + sv.getType().getSizeConstraints().get(0).getMinValue() + ".." + sv.getType().getSizeConstraints().get(0).getMaxValue() + "))";
-//                    }
-
-                    String access = sv.getAccessToken()!=null? sv.getAccessToken().getId() : sv.getMaxAccessToken().getId();
-                    String mib = sv.getModule().getId();
-                    String status = sv.getStatus().toString();
-                    String defval = "";
-                    String indexes = "";
-                    String description = printDescription(sv.getDescription(), printDesc);
-
-                    if(sv.getDefaultValue() !=null) {
-                        if(sv.getDefaultValue().getBigIntegerToken()!=null) {
-                            defval = sv.getDefaultValue().getBigIntegerToken().getValue().toString();
-                        } else if(sv.getDefaultValue().getBinaryStringToken()!=null) {
-                            defval = sv.getDefaultValue().getBinaryStringValue();
-                        } else if(sv.getDefaultValue().getHexStringToken()!=null) {
-                            defval = sv.getDefaultValue().getHexStringToken().toString();
-                        } else if(sv.getDefaultValue().getQuotedStringToken()!=null) {
-                            defval = sv.getDefaultValue().getQuotedStringToken().getValue();
-                        } else if(sv.getDefaultValue().getEnumValue()!=null) {
-                            defval = sv.getDefaultValue().getEnumValue().getId();
-                        }
-                    }
-
-                    m.put("type", type);
-                    m.put("syntax", syntax);
-                    m.put("access", access);
-                    m.put("mib", mib);
-                    m.put("status", status);
-                    m.put("defval", defval);
-                    m.put("indexes", indexes);
-                    m.put("description", description);
-
-                } else if (var instanceof SmiOidValue) {
-                    int num_child = child.getTotalChildCount();
-
-                    String type = "DIRECTORY";
-                    if (num_child > 0) {
-                    } else {
-                        type = "LEAF";
-                    }
-
-//                    if ( "private".equals(name) ) {
-//                        isPrivate = true;
-//                    }
-//
-//                    if( isPrivate || (!isPrivate && findParent(child, "private")) ) {
-//                        if(!separatePrivate(child, mibName)) {
-//                            continue;
-//                        }
-//                    }
-
-                    if ( var.getUserData()!=null && "NOTIFICATION-TYPE".equals(var.getUserData().get("objectType")) ) {
-                        type = "TRAP";
-                    }
-
-                    String mib = var.getModule().getId();
-
-                    m.put("type", type);
-                    m.put("syntax", "");
-                    m.put("access", "");
-                    m.put("mib", mib);
-                    m.put("status", "");
-                    m.put("defval", "");
-                    m.put("indexes", "");
-                    m.put("description", "");
+                    indexes += sb.toString().replaceFirst(", ", "");
                 }
             }
-            list.add(m);
-            map.put("child", list);
-            mibAstToMap(m, mibName, child, depth + 1);
+            else if (var instanceof SmiVariable) {
+                SmiVariable sv = (SmiVariable) var;
+
+                type = name.contains("Index")? "INDEX":"LEAF";
+                if(sv.getType().getBaseType()!=null) {
+                    syntax = sv.getType().getBaseType().getId();
+                } else if(sv.getType().getPrimitiveType()!=null){
+                    syntax= sv.getType().getPrimitiveType().toString();
+                } else {
+                    syntax = sv.getType().getIdToken().getValue();
+                }
+                access = sv.getAccessToken()!=null? sv.getAccessToken().getId() : sv.getMaxAccessToken().getId();
+                mib = sv.getModule().getId();
+                status = sv.getStatus().toString();
+                description = printDescription(sv.getDescription(), printDesc);
+                if(sv.getDefaultValue() !=null) {
+                    if(sv.getDefaultValue().getBigIntegerToken()!=null) {
+                        defval = sv.getDefaultValue().getBigIntegerToken().getValue().toString();
+                    } else if(sv.getDefaultValue().getBinaryStringToken()!=null) {
+                        defval = sv.getDefaultValue().getBinaryStringValue();
+                    } else if(sv.getDefaultValue().getHexStringToken()!=null) {
+                        defval = sv.getDefaultValue().getHexStringToken().toString();
+                    } else if(sv.getDefaultValue().getQuotedStringToken()!=null) {
+                        defval = sv.getDefaultValue().getQuotedStringToken().getValue();
+                    } else if(sv.getDefaultValue().getEnumValue()!=null) {
+                        defval = sv.getDefaultValue().getEnumValue().getId();
+                    }
+                }
+            }
+            else if (var instanceof SmiOidValue) {
+                int num_child = node.getTotalChildCount();
+                type = "DIRECTORY";
+                if (num_child > 0) {
+                } else {
+                    type = "LEAF";
+                }
+                if ( var.getUserData()!=null && "NOTIFICATION-TYPE".equals(var.getUserData().get("objectType")) ) {
+                    type = "TRAP";
+                }
+                mib = var.getModule().getId();
+            }
         }
+        return new MibDTO(oid, name, type, syntax, access, mib, status, defval, indexes, description, isScalar, list);
     }
 }
-
